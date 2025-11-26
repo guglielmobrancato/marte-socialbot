@@ -1,0 +1,24 @@
+name: Marte Social Manager
+
+on:
+  schedule:
+    # 07:30 UTC = 08:30 / 09:30 Italia
+    - cron: '30 7 * * *'
+  workflow_dispatch:
+
+jobs:
+  write-post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Scrivi e Invia
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          TARGET_EMAIL: ${{ secrets.TARGET_EMAIL }}
+        run: python social_ghostwriter.py
