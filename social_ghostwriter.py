@@ -3,7 +3,7 @@ import datetime
 import smtplib
 import requests
 import io
-import time
+import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
@@ -21,7 +21,7 @@ TARGET_EMAIL = os.environ["TARGET_EMAIL"]
 genai.configure(api_key=GENAI_API_KEY)
 model = genai.GenerativeModel('gemini-2.0-flash')
 
-# --- FONT URLS ---
+# --- FONT URLS (Con User-Agent per evitare blocchi) ---
 FONTS = {
     'cinema': 'https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf',
     'intelligence': 'https://github.com/google/fonts/raw/main/ofl/playfairdisplay/PlayfairDisplay-Bold.ttf',
@@ -31,16 +31,23 @@ FONTS = {
 
 def download_font(url):
     try:
-        r = requests.get(url, timeout=10)
-        return io.BytesIO(r.content)
-    except: return None
+        # Alcuni server bloccano richieste senza User-Agent
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            return io.BytesIO(r.content)
+    except Exception as e:
+        print(f"Errore Font {url}: {e}")
+    return None
 
 def wrap_text(text, font, max_width, draw):
+    if not text: return []
     lines = []
     words = text.split(' ')
     current_line = []
     for word in words:
         current_line.append(word)
+        # Rimuove asterischi per calcolare la larghezza reale
         test_line = ' '.join(current_line).replace('*', '')
         bbox = draw.textbbox((0, 0), test_line, font=font)
         w = bbox[2] - bbox[0]
@@ -53,25 +60,27 @@ def wrap_text(text, font, max_width, draw):
 
 def create_slide(title, text, footer, font_url, is_cover=False):
     W, H = 1080, 1080
-    
-    # SFONDO GENERATO VIA CODICE (Nero Marte)
-    # Non cerca file esterni, quindi non può crashare
     img = Image.new('RGB', (W, H), color='#050202')
     draw = ImageDraw.Draw(img)
     
-    # Carica Font
     font_bytes = download_font(font_url)
+    
+    # Fallback dimensioni se il font non carica
     size_title = 110 if is_cover else 60
     size_body = 48
     size_footer = 28
     
     try:
-        font_title = ImageFont.truetype(font_bytes, size_title)
-        font_bytes.seek(0)
-        font_body = ImageFont.truetype(font_bytes, size_body)
-        font_bytes.seek(0)
-        font_footer = ImageFont.truetype(font_bytes, size_footer)
+        if font_bytes:
+            font_title = ImageFont.truetype(font_bytes, size_title)
+            font_bytes.seek(0)
+            font_body = ImageFont.truetype(font_bytes, size_body)
+            font_bytes.seek(0)
+            font_footer = ImageFont.truetype(font_bytes, size_footer)
+        else:
+            raise Exception("Font non scaricato")
     except:
+        print("Usando font default (brutto ma leggibile)")
         font_title = font_body = font_footer = ImageFont.load_default()
 
     # Colori
@@ -79,13 +88,16 @@ def create_slide(title, text, footer, font_url, is_cover=False):
     COL_WHITE = '#f0f0f0'
     COL_GREY = '#aaaaaa'
 
-    # Disegna
-    draw.text((80, 80), title.upper(), font=font_title, fill=COL_ORANGE)
+    # Header
+    draw.text((80, 80), str(title).upper(), font=font_title, fill=COL_ORANGE)
     draw.line((80, 80 + size_title + 25, W-80, 80 + size_title + 25), fill=COL_ORANGE, width=3)
 
+    # Corpo (Se vuoto, scrive un placeholder per debug)
+    if not text or len(text) < 2: text = "Contenuto mancante."
+    
     start_y = 360
     max_w = W - 160
-    lines = wrap_text(text, font_body, max_w, draw)
+    lines = wrap_text(str(text), font_body, max_w, draw)
     current_y = start_y
     
     for line in lines:
@@ -99,38 +111,68 @@ def create_slide(title, text, footer, font_url, is_cover=False):
             current_x += (bbox[2] - bbox[0])
         current_y += size_body + 15
 
-    draw.text((80, H-80), footer, font=font_footer, fill=COL_GREY)
+    draw.text((80, H-80), str(footer), font=font_footer, fill=COL_GREY)
     return img
 
 def get_gemini_content(prompt, context):
     full_prompt = f"""
-    Sei un Social Media Manager. CONTESTO: {context}
-    OBIETTIVO 1: Copy LinkedIn (Terza persona, No Emoji).
-    OBIETTIVO 2: 4 Slide brevi.
-    IMPORTANTE: Metti le *PAROLE CHIAVE* delle slide tra asterischi.
-    FORMATO OUTPUT:
-    ---COPY--- (Testo)
-    ---SLIDE_TITOLO--- (Titolo)
-    ---SLIDE_1--- (Concetto 1)
-    ---SLIDE_2--- (Concetto 2)
-    ---SLIDE_3--- (Conclusione)
+    Sei un Social Media Manager.
+    CONTESTO: {context}
+    
+    Compito: Scrivi il copy per LinkedIn e 4 slide brevi.
+    IMPORTANTE: Metti le parole chiave delle slide tra asterischi (*).
+    
+    USA ESATTAMENTE QUESTI TAG PER SEPARARE LE PARTI:
+    
+    [[COPY_START]]
+    (Qui scrivi il testo del post)
+    [[COPY_END]]
+    
+    [[TITOLO_START]]
+    (Titolo Cover)
+    [[TITOLO_END]]
+    
+    [[SLIDE1_START]]
+    (Concetto 1)
+    [[SLIDE1_END]]
+    
+    [[SLIDE2_START]]
+    (Concetto 2)
+    [[SLIDE2_END]]
+    
+    [[SLIDE3_START]]
+    (Conclusione)
+    [[SLIDE3_END]]
+    
     Istruzione: {prompt}
     """
     try:
         response = model.generate_content(full_prompt)
         return response.text
     except Exception as e:
-        return f"Errore Gemini: {e}"
+        return f"Errore AI: {e}"
+
+def extract_tag(text, tag_name):
+    """Estrae il testo tra [[TAG_START]] e [[TAG_END]] usando Regex"""
+    pattern = f"\\[\\[{tag_name}_START\\]\\](.*?)\\[\\[{tag_name}_END\\]\\]"
+    match = re.search(pattern, text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return "" # Ritorna vuoto se non trova
 
 def parse_response(text):
-    data = {'copy': '', 'titolo': 'Marte Update', 's1': '...', 's2': '...', 's3': '...'}
-    parts = text.split('---')
-    for p in parts:
-        if p.startswith('COPY'): data['copy'] = p.replace('COPY', '').strip()
-        elif p.startswith('SLIDE_TITOLO'): data['titolo'] = p.replace('SLIDE_TITOLO', '').strip()
-        elif p.startswith('SLIDE_1'): data['s1'] = p.replace('SLIDE_1', '').strip()
-        elif p.startswith('SLIDE_2'): data['s2'] = p.replace('SLIDE_2', '').strip()
-        elif p.startswith('SLIDE_3'): data['s3'] = p.replace('SLIDE_3', '').strip()
+    data = {}
+    data['copy'] = extract_tag(text, "COPY")
+    data['titolo'] = extract_tag(text, "TITOLO")
+    data['s1'] = extract_tag(text, "SLIDE1")
+    data['s2'] = extract_tag(text, "SLIDE2")
+    data['s3'] = extract_tag(text, "SLIDE3")
+    
+    # Fallback se l'AI fallisce i tag
+    if not data['copy']: data['copy'] = "Errore generazione testo. Controllare AI."
+    if not data['titolo']: data['titolo'] = "MARTE UPDATE"
+    if not data['s1']: data['s1'] = "Dati non disponibili."
+    
     return data
 
 def scrape_section(url, selector):
@@ -205,11 +247,15 @@ def main():
     if post_type:
         print(f"Generazione: {post_type}")
         raw = get_gemini_content(prompt, scraped_text)
+        
+        # Debug print (visibile nei log di GitHub se serve)
+        # print(raw) 
+        
         data = parse_response(raw)
         
         slides_imgs = []
         font_url = FONTS[font_key]
-        footer_text = f"MARTE STUDIOS | {link_url.replace('https://','')}"
+        footer_text = "MARTE STUDIOS"
 
         slides_imgs.append(create_slide(data['titolo'], "Scorri per leggere ->", footer_text, font_url, is_cover=True))
         slides_imgs.append(create_slide("INSIGHT 01", data['s1'], footer_text, font_url))
@@ -223,7 +269,20 @@ def main():
         pdf_buf = io.BytesIO()
         slides_imgs[0].save(pdf_buf, format='PDF', save_all=True, append_images=slides_imgs[1:])
         
-        send_email_kit(post_type, f"Ecco il kit per {post_type}.\n\n---COPY---\n{data['copy']}", jpg_list, pdf_buf.getvalue())
+        email_body = f"""
+        KIT COMPLETO: {post_type}
+        
+        --- COPY LINKEDIN ---
+        
+        {data['copy']}
+        
+        Link: {link_url}
+        
+        ---------------------
+        In allegato: PDF per carosello + Immagini per Instagram.
+        """
+        
+        send_email_kit(post_type, email_body, jpg_list, pdf_buf.getvalue())
     else:
         print("Nessun post oggi.")
 
