@@ -21,33 +21,30 @@ TARGET_EMAIL = os.environ["TARGET_EMAIL"]
 genai.configure(api_key=GENAI_API_KEY)
 model = genai.GenerativeModel('gemini-2.0-flash')
 
-# --- FONT URLS (Con User-Agent per evitare blocchi) ---
+# --- FONT URLS (AFFIDABILI) ---
+# Usiamo font molto pesanti (Bold/Black) per leggibilità
 FONTS = {
-    'cinema': 'https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Bold.ttf',
-    'intelligence': 'https://github.com/google/fonts/raw/main/ofl/playfairdisplay/PlayfairDisplay-Bold.ttf',
+    'cinema': 'https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Black.ttf',
+    'intelligence': 'https://github.com/google/fonts/raw/main/ofl/playfairdisplay/PlayfairDisplay-Black.ttf',
     'music': 'https://github.com/google/fonts/raw/main/ofl/bebasneue/BebasNeue-Regular.ttf',
-    'agency': 'https://github.com/google/fonts/raw/main/apache/robotoslab/RobotoSlab-Bold.ttf'
+    'agency': 'https://github.com/google/fonts/raw/main/apache/robotoslab/RobotoSlab-Black.ttf'
 }
 
 def download_font(url):
     try:
-        # Alcuni server bloccano richieste senza User-Agent
         headers = {'User-Agent': 'Mozilla/5.0'}
         r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code == 200:
-            return io.BytesIO(r.content)
-    except Exception as e:
-        print(f"Errore Font {url}: {e}")
-    return None
+        return io.BytesIO(r.content)
+    except: return None
 
 def wrap_text(text, font, max_width, draw):
+    """Calcola a capo automatico"""
     if not text: return []
     lines = []
     words = text.split(' ')
     current_line = []
     for word in words:
         current_line.append(word)
-        # Rimuove asterischi per calcolare la larghezza reale
         test_line = ' '.join(current_line).replace('*', '')
         bbox = draw.textbbox((0, 0), test_line, font=font)
         w = bbox[2] - bbox[0]
@@ -59,16 +56,16 @@ def wrap_text(text, font, max_width, draw):
     return lines
 
 def create_slide(title, text, footer, font_url, is_cover=False):
-    W, H = 1080, 1080
-    img = Image.new('RGB', (W, H), color='#050202')
+    W, H = 1080, 1080 # Formato HD
+    img = Image.new('RGB', (W, H), color='#0a0a0a') # Nero profondo
     draw = ImageDraw.Draw(img)
     
     font_bytes = download_font(font_url)
     
-    # Fallback dimensioni se il font non carica
-    size_title = 110 if is_cover else 60
-    size_body = 48
-    size_footer = 28
+    # --- DIMENSIONI MAGGIORATE ---
+    size_title = 130 if is_cover else 90 # Molto grande
+    size_body = 70  # Molto leggibile
+    size_footer = 35
     
     try:
         if font_bytes:
@@ -78,71 +75,69 @@ def create_slide(title, text, footer, font_url, is_cover=False):
             font_bytes.seek(0)
             font_footer = ImageFont.truetype(font_bytes, size_footer)
         else:
-            raise Exception("Font non scaricato")
+            raise Exception("Font fail")
     except:
-        print("Usando font default (brutto ma leggibile)")
         font_title = font_body = font_footer = ImageFont.load_default()
 
-    # Colori
+    # Colori Marte
     COL_ORANGE = '#ff5500'
-    COL_WHITE = '#f0f0f0'
-    COL_GREY = '#aaaaaa'
+    COL_WHITE = '#ffffff'
+    COL_GREY = '#888888'
 
-    # Header
-    draw.text((80, 80), str(title).upper(), font=font_title, fill=COL_ORANGE)
-    draw.line((80, 80 + size_title + 25, W-80, 80 + size_title + 25), fill=COL_ORANGE, width=3)
-
-    # Corpo (Se vuoto, scrive un placeholder per debug)
-    if not text or len(text) < 2: text = "Contenuto mancante."
+    # Margini
+    margin_x = 100
     
-    start_y = 360
-    max_w = W - 160
+    # TITOLO
+    draw.text((margin_x, 100), str(title).upper(), font=font_title, fill=COL_ORANGE)
+    
+    # LINEA
+    line_y = 100 + size_title + 30
+    draw.line((margin_x, line_y, W-margin_x, line_y), fill=COL_ORANGE, width=6)
+
+    # CORPO
+    if not text or len(str(text)) < 2: text = "..."
+    
+    start_y = line_y + 80
+    max_w = W - (margin_x * 2)
+    
     lines = wrap_text(str(text), font_body, max_w, draw)
     current_y = start_y
     
     for line in lines:
         parts = line.split('*')
-        current_x = 80
+        current_x = margin_x
         for i, part in enumerate(parts):
             color = COL_ORANGE if i % 2 != 0 else COL_WHITE
             if not part: continue
             draw.text((current_x, current_y), part, font=font_body, fill=color)
             bbox = draw.textbbox((0, 0), part, font=font_body)
             current_x += (bbox[2] - bbox[0])
-        current_y += size_body + 15
+        current_y += size_body + 20 # Interlinea ampia
 
-    draw.text((80, H-80), str(footer), font=font_footer, fill=COL_GREY)
+    # FOOTER
+    draw.text((margin_x, H-120), str(footer), font=font_footer, fill=COL_GREY)
+    
     return img
 
 def get_gemini_content(prompt, context):
     full_prompt = f"""
-    Sei un Social Media Manager.
-    CONTESTO: {context}
+    Sei un Senior Editor. 
+    CONTESTO REALE DAL SITO: "{context}"
     
-    Compito: Scrivi il copy per LinkedIn e 4 slide brevi.
-    IMPORTANTE: Metti le parole chiave delle slide tra asterischi (*).
+    Compito:
+    1. Scrivi Copy LinkedIn (Terza persona, NO EMOJI).
+    2. Crea 4 Slide sintetiche. 
     
-    USA ESATTAMENTE QUESTI TAG PER SEPARARE LE PARTI:
+    IMPORTANTE: 
+    - Se il contesto è vuoto, scrivi "ERRORE LETTURA SITO".
+    - Metti le *PAROLE CHIAVE* delle slide tra asterischi.
     
-    [[COPY_START]]
-    (Qui scrivi il testo del post)
-    [[COPY_END]]
-    
-    [[TITOLO_START]]
-    (Titolo Cover)
-    [[TITOLO_END]]
-    
-    [[SLIDE1_START]]
-    (Concetto 1)
-    [[SLIDE1_END]]
-    
-    [[SLIDE2_START]]
-    (Concetto 2)
-    [[SLIDE2_END]]
-    
-    [[SLIDE3_START]]
-    (Conclusione)
-    [[SLIDE3_END]]
+    OUTPUT FORMAT:
+    [[COPY_START]] ... [[COPY_END]]
+    [[TITOLO_START]] (Titolo Cover max 4 parole) [[TITOLO_END]]
+    [[SLIDE1_START]] (Concetto 1 max 12 parole) [[SLIDE1_END]]
+    [[SLIDE2_START]] (Concetto 2 max 12 parole) [[SLIDE2_END]]
+    [[SLIDE3_START]] (Conclusione max 12 parole) [[SLIDE3_END]]
     
     Istruzione: {prompt}
     """
@@ -153,12 +148,9 @@ def get_gemini_content(prompt, context):
         return f"Errore AI: {e}"
 
 def extract_tag(text, tag_name):
-    """Estrae il testo tra [[TAG_START]] e [[TAG_END]] usando Regex"""
     pattern = f"\\[\\[{tag_name}_START\\]\\](.*?)\\[\\[{tag_name}_END\\]\\]"
     match = re.search(pattern, text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    return "" # Ritorna vuoto se non trova
+    return match.group(1).strip() if match else ""
 
 def parse_response(text):
     data = {}
@@ -168,26 +160,37 @@ def parse_response(text):
     data['s2'] = extract_tag(text, "SLIDE2")
     data['s3'] = extract_tag(text, "SLIDE3")
     
-    # Fallback se l'AI fallisce i tag
-    if not data['copy']: data['copy'] = "Errore generazione testo. Controllare AI."
+    if not data['copy']: data['copy'] = "Errore generazione copy."
     if not data['titolo']: data['titolo'] = "MARTE UPDATE"
     if not data['s1']: data['s1'] = "Dati non disponibili."
-    
     return data
 
 def scrape_section(url, selector):
+    """Scarica testo usando ID precisi"""
+    print(f"Scraping: {url} -> {selector}")
     try:
-        r = requests.get(url, timeout=10)
+        r = requests.get(url, timeout=15)
         soup = BeautifulSoup(r.text, 'html.parser')
+        
+        # Cerca selettore specifico
         el = soup.select_one(selector)
-        return el.get_text(" ", strip=True)[:2000] if el else ""
-    except: return ""
+        if el:
+            clean = el.get_text(" ", strip=True)
+            return clean[:2500] # Max caratteri
+            
+        # Fallback per MSH: se non trova l'articolo, prende tutto il body
+        if "msh" in url:
+            return soup.body.get_text(" ", strip=True)[:2500]
+            
+    except Exception as e:
+        return f"Errore tecnico scraping: {e}"
+    return ""
 
 def send_email_kit(subject, body, images_list, pdf_bytes):
     msg = MIMEMultipart()
     msg['From'] = EMAIL_USER
     msg['To'] = TARGET_EMAIL
-    msg['Subject'] = f"📦 MEDIA KIT: {subject}"
+    msg['Subject'] = f"📦 MEDIA KIT PRO: {subject}"
     msg.attach(MIMEText(body, 'plain'))
     
     pdf_att = MIMEApplication(pdf_bytes, _subtype="pdf")
@@ -212,25 +215,27 @@ def main():
 
     post_type = None; prompt = ""; font_key = 'agency'; link_url = ""; scraped_text = ""
 
-    # --- CALENDARIO ---
+    # --- CALENDARIO PRECISO ---
     if weekday == 0: 
         post_type = "Cinema Cult"; font_key = 'cinema'
         link_url = "https://velvet.martestudios.com/cinema.html"
+        # Prende esattamente il box vintage
         scraped_text = scrape_section(link_url, "#vintage-feed")
-        prompt = "Slide educative film."
+        prompt = "Slide educative sul film cult della settimana."
 
     elif weekday == 2: 
         post_type = "Intelligence"; font_key = 'intelligence'
         link_url = "https://msh.martestudios.com"
-        scraped_text = scrape_section(link_url, "article")
-        if len(scraped_text)<20: scraped_text = scrape_section(link_url, "body")
-        prompt = "Slide analitiche geopolitica."
+        # Prende il contenitore delle news
+        scraped_text = scrape_section(link_url, "#news-feed") 
+        if len(scraped_text) < 50: scraped_text = scrape_section(link_url, "article")
+        prompt = "Slide analitiche sulla news di geopolitica odierna."
 
     elif weekday == 4: 
         post_type = "Music Vibe"; font_key = 'music'
         link_url = "https://velvet.martestudios.com/musica.html"
         scraped_text = scrape_section(link_url, "#vintage-feed")
-        prompt = "Slide sound album."
+        prompt = "Slide sull'album vintage della settimana."
 
     # --- MENSILE ---
     if day_num == 1:
@@ -246,21 +251,25 @@ def main():
     # --- ESECUZIONE ---
     if post_type:
         print(f"Generazione: {post_type}")
+        
+        # Se lo scraping è vuoto, avvisiamo nella mail
+        debug_msg = ""
+        if not scraped_text or len(scraped_text) < 10:
+            scraped_text = "NESSUN DATO TROVATO SUL SITO."
+            debug_msg = "\n⚠️ ATTENZIONE: Il bot non ha trovato testo sul sito. Verifica che il sito sia aggiornato."
+
         raw = get_gemini_content(prompt, scraped_text)
-        
-        # Debug print (visibile nei log di GitHub se serve)
-        # print(raw) 
-        
         data = parse_response(raw)
         
         slides_imgs = []
         font_url = FONTS[font_key]
         footer_text = "MARTE STUDIOS"
 
-        slides_imgs.append(create_slide(data['titolo'], "Scorri per leggere ->", footer_text, font_url, is_cover=True))
-        slides_imgs.append(create_slide("INSIGHT 01", data['s1'], footer_text, font_url))
-        slides_imgs.append(create_slide("INSIGHT 02", data['s2'], footer_text, font_url))
-        slides_imgs.append(create_slide("CONCLUSIONE", data['s3'], footer_text, font_url))
+        # Generazione Immagini
+        slides_imgs.append(create_slide(data['titolo'], "Scorri ->", footer_text, font_url, is_cover=True))
+        slides_imgs.append(create_slide("01", data['s1'], footer_text, font_url))
+        slides_imgs.append(create_slide("02", data['s2'], footer_text, font_url))
+        slides_imgs.append(create_slide("03", data['s3'], footer_text, font_url))
 
         jpg_list = []
         for img in slides_imgs:
@@ -270,16 +279,18 @@ def main():
         slides_imgs[0].save(pdf_buf, format='PDF', save_all=True, append_images=slides_imgs[1:])
         
         email_body = f"""
-        KIT COMPLETO: {post_type}
+        KIT PRO ({post_type})
+        
+        {debug_msg}
+        
+        --- DATI LETTI DAL SITO (DEBUG) ---
+        {scraped_text[:300]}...
+        -----------------------------------
         
         --- COPY LINKEDIN ---
-        
         {data['copy']}
         
         Link: {link_url}
-        
-        ---------------------
-        In allegato: PDF per carosello + Immagini per Instagram.
         """
         
         send_email_kit(post_type, email_body, jpg_list, pdf_buf.getvalue())
