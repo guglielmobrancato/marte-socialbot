@@ -19,10 +19,11 @@ genai.configure(api_key=GENAI_API_KEY)
 model = genai.GenerativeModel('gemini-2.0-flash')
 
 def clean_copy(text):
-    """Pulisce il testo da markdown e intestazioni inutili"""
+    """Pulisce il testo solo da grassetti e corsivi markdown, salvando gli hashtag"""
     if not text: return ""
-    # Rimuove grassetti, titoli markdown, ecc.
-    text = text.replace("*", "").replace("#", "")
+    # Rimuove solo asterischi (grassetto) e underscore (corsivo)
+    text = text.replace("*", "").replace("__", "")
+    # NOTA: Non rimuoviamo più il #, così gli hashtag restano!
     return text.strip()
 
 def get_gemini_copy(prompt, context):
@@ -36,7 +37,7 @@ def get_gemini_copy(prompt, context):
     3. NIENTE EMOJI. Zero.
     4. NIENTE FORMATTAZIONE MARKDOWN (No asterischi, no grassetti).
     5. Sintesi perfetta ma accattivante.
-    6. INCLUDI 3-5 HASHTAG alla fine.
+    6. INCLUDI 3-5 HASHTAG alla fine (es: #Geopolitica #News).
     
     TESTO DA RIASSUMERE:
     {context}
@@ -57,13 +58,12 @@ def get_msh_data():
         response = requests.get(url)
         text = response.text
         # Il file inizia con 'const mshData = { ...' quindi puliamo per avere solo il JSON
-        # Cerchiamo il contenuto tra la prima graffa e l'ultimo punto e virgola
         json_str = text.split('const mshData =')[1].strip().rstrip(';')
         data = json.loads(json_str)
         
         # Estraiamo il contenuto dell'articolo principale (monograph)
         if 'monograph' in data and 'content' in data['monograph']:
-            # Puliamo l'HTML interno all'articolo
+            # Puliamo l'HTML interno all'articolo per darlo in pasto a Gemini pulito
             soup = BeautifulSoup(data['monograph']['content'], 'html.parser')
             return soup.get_text(" ", strip=True)
             
@@ -85,7 +85,7 @@ def send_clean_email(subject, body):
     msg = MIMEMultipart()
     msg['From'] = EMAIL_USER
     msg['To'] = TARGET_EMAIL
-    msg['Subject'] = subject # Oggetto pulito
+    msg['Subject'] = subject 
     
     # Corpo mail: SOLO IL COPY
     msg.attach(MIMEText(body, 'plain'))
@@ -120,7 +120,7 @@ def main():
             subject = "LinkedIn: MSH Geopolitica"
             post_copy = get_gemini_copy("Riassumi questa analisi di intelligence. Tono serio e analitico. Cita msh.martestudios.com", raw_text)
         else:
-            post_copy = "Errore lettura dati MSH."
+            post_copy = "Errore lettura dati MSH. Controllare il sito."
 
     # --- VENERDÌ: MUSICA (Velvet) ---
     elif weekday == 4:
