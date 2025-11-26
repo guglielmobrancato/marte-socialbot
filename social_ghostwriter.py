@@ -2,8 +2,10 @@ import os
 import datetime
 import smtplib
 import requests
+import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.image import MIMEImage
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 
@@ -16,38 +18,89 @@ TARGET_EMAIL = os.environ["TARGET_EMAIL"]
 genai.configure(api_key=GENAI_API_KEY)
 model = genai.GenerativeModel('gemini-2.0-flash')
 
-def get_gemini_copy(prompt, context=""):
+def clean_text(text):
+    """Pulisce il testo da formattazione markdown indesiderata"""
+    if not text: return ""
+    text = text.replace("*", "") 
+    text = text.replace("#", "")
+    return text
+
+def get_gemini_copy(prompt, context="", link_url=""):
     full_prompt = f"""
-    Sei un Social Media Manager esperto per LinkedIn. 
-    Scrivi un post accattivante, professionale ma con personalità.
-    Usa elenchi puntati se serve. Usa emoji pertinenti.
-    Includi 3-5 hashtag strategici alla fine.
+    Sei un giornalista senior per LinkedIn.
     
-    CONTESTO DA ELABORARE:
+    IL TUO OBIETTIVO:
+    Scrivi un post LinkedIn basato ESCLUSIVAMENTE sul testo fornito nel contesto.
+    
+    REGOLE DI STILE INDEROGABILI:
+    1. Scrivi in TERZA PERSONA (es: "L'analisi di oggi...", "Il report evidenzia...").
+    2. NIENTE EMOJI. Zero. Nemmeno una.
+    3. NIENTE ASTERISCHI o formattazione markdown.
+    4. Stile: Professionale, sintetico, 'catchy' ma serio.
+    5. NON INVENTARE: Riassumi solo quello che leggi nel contesto.
+    
+    STRUTTURA:
+    - Titolo/Gancio (senza scriverlo come titolo, solo una frase forte).
+    - Riassunto del contenuto (2-3 frasi).
+    - Conclusione.
+    - Link: {link_url}
+    - 3 Hashtag finali.
+
+    CONTESTO DA RIASSUMERE:
     {context}
     
-    RICHIESTA SPECIFICA:
+    ISTRUZIONE SPECIFICA:
     {prompt}
     """
     response = model.generate_content(full_prompt)
-    return response.text
+    return clean_text(response.text)
 
-def scrape_site(url, selector):
+def scrape_section(url, selector):
+    """Scarica il testo specifico di una sezione"""
+    data = {"text": "", "img_url": None}
     try:
         response = requests.get(url)
         soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Cerca l'elemento specifico
         element = soup.select_one(selector)
-        return element.text.strip() if element else "Contenuto non trovato."
-    except:
-        return "Errore nel leggere il sito."
+        
+        if element:
+            # Pulisce il testo
+            data["text"] = element.get_text(separator=" ", strip=True)[:2000]
+            
+            # Cerca immagine dentro l'elemento o nei paraggi
+            img = element.find('img')
+            if img and img.has_attr('src'):
+                src = img['src']
+                if not src.startswith('http'): src = url + src
+                data["img_url"] = src
+                
+        return data
+    except Exception as e:
+        print(f"Errore scraping {url}: {e}")
+        return data
 
-def send_email(subject, body):
+def download_image(url):
+    try:
+        if not url: return None
+        response = requests.get(url, stream=True)
+        if response.status_code == 200:
+            return response.content
+    except:
+        pass
+    return None
+
+def send_email(subject, body, image_data):
     msg = MIMEMultipart()
     msg['From'] = EMAIL_USER
     msg['To'] = TARGET_EMAIL
-    msg['Subject'] = f"🚀 BOZZA LINKEDIN: {subject}"
-    
+    msg['Subject'] = f"📄 POST LINKEDIN: {subject}"
     msg.attach(MIMEText(body, 'plain'))
+    
+    if image_data:
+        image = MIMEImage(image_data, name="social_image.jpg")
+        msg.attach(image)
     
     server = smtplib.SMTP('smtp.gmail.com', 587)
     server.starttls()
@@ -55,7 +108,7 @@ def send_email(subject, body):
     text = msg.as_string()
     server.sendmail(EMAIL_USER, TARGET_EMAIL, text)
     server.quit()
-    print("📧 Email inviata correttamente.")
+    print("📧 Email inviata.")
 
 def main():
     today = datetime.datetime.now()
@@ -63,77 +116,96 @@ def main():
     day_num = today.day
 
     post_type = None
-    context_data = ""
     prompt = ""
+    link_url = ""
+    scraped_data = {"text": "", "img_url": None}
 
-    # --- LOGICA SETTIMANALE ---
+    # --- SETTIMANALE ---
     
-    # LUNEDÌ: Cinema (Velvet)
+    # LUNEDÌ: Cinema (Pellicola Cult)
     if weekday == 0:
-        post_type = "Recensione Film Cult"
-        # Prende il contenuto dal box vintage di Velvet Cinema
-        context_data = scrape_site("https://velvet.martestudios.com/cinema.html", "#vintage-feed")
-        prompt = "Scrivi un post LinkedIn per consigliare questo film cult della settimana. Parla di cinema d'autore, riscoperta e cultura visiva."
+        post_type = "Cinema Cult Week"
+        link_url = "https://velvet.martestudios.com/cinema.html"
+        # PRENDE SOLO IL CONTENUTO DEL BOX VINTAGE (#vintage-feed)
+        scraped_data = scrape_section(link_url, "#vintage-feed")
+        # Se non c'è img nel box, ne mettiamo una generica cinema
+        if not scraped_data["img_url"]: 
+             scraped_data["img_url"] = "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?q=80&w=1080"
+        prompt = "Riassumi questa recensione di un film cult. Parla dell'importanza di riscoprire il cinema del passato."
 
-    # MERCOLEDÌ: Geopolitica (MSH)
+    # MERCOLEDÌ: MSH (Recap Geopolitica del Giorno)
     elif weekday == 2:
-        post_type = "Intelligence Insight"
-        # Prende il primo articolo di MSH (devi assicurarti che MSH abbia selettori, o usiamo un prompt generico sul sito)
-        # Nota: Qui simuliamo la lettura del titolo news principale se MSH ha una struttura leggibile, 
-        # altrimenti chiediamo a Gemini di generare un pensiero geopolitico basato sull'attualità.
-        # Per semplicità, facciamo generare un pensiero basato sull'attualità generale se lo scraping è complesso.
-        context_data = "Analisi settimanale intelligence."
-        prompt = "Scrivi un post LinkedIn professionale sull'importanza di comprendere la geopolitica oggi per il business. Cita MSH (msh.martestudios.com) come fonte di intelligence affidabile."
+        post_type = "MSH Intelligence Recap"
+        link_url = "https://msh.martestudios.com"
+        # PRENDE IL PRIMO ARTICOLO IN ALTO (che è il recap IA giornaliero)
+        # Nota: Usiamo "article" come selettore generico, o il container specifico delle news se diverso.
+        scraped_data = scrape_section(link_url, "article") 
+        
+        # Immagine generica news se non trovata
+        if not scraped_data["img_url"]:
+            scraped_data["img_url"] = "https://images.unsplash.com/photo-1504711434969-e33886168f5c?q=80&w=1080"
+            
+        prompt = "Riassumi questo articolo di geopolitica. Metti in luce i punti chiave dell'analisi odierna."
 
-    # VENERDÌ: Musica (Velvet)
+    # VENERDÌ: Musica (Album Vintage)
     elif weekday == 4:
-        post_type = "Album Vintage Weekend"
-        context_data = scrape_site("https://velvet.martestudios.com/musica.html", "#vintage-feed")
-        prompt = "Scrivi un post LinkedIn leggero per il venerdì. Consiglia questo album vintage per il weekend. Parla di creatività, ispirazione e sound design."
+        post_type = "Music Vinyl Friday"
+        link_url = "https://velvet.martestudios.com/musica.html"
+        # PRENDE SOLO IL CONTENUTO DEL BOX VINTAGE (#vintage-feed)
+        scraped_data = scrape_section(link_url, "#vintage-feed")
+        # Immagine vinile generica
+        scraped_data["img_url"] = "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?q=80&w=1080"
+        prompt = "Riassumi questa recensione di un album vintage. Parla di groove e sonorità."
 
-    # --- LOGICA MENSILE (Sovrascrive la settimanale se coincide, o si aggiunge) ---
+    # --- MENSILE (Promo) ---
     
-    # Giorno 1: Agency
     if day_num == 1:
         post_type = "Promo Agency"
-        context_data = "Servizi: Sviluppo Web App, Siti Web, Marketing Strategy."
-        prompt = "Scrivi un post promozionale per 'Marte Agency' (agency.martestudios.com). Focus: Trasformiamo idee in ecosistemi digitali. Call to action per contattarci."
+        link_url = "https://agency.martestudios.com"
+        scraped_data["text"] = "Servizi: Sviluppo Web, App, Marketing Strategy."
+        scraped_data["img_url"] = "https://images.unsplash.com/photo-1522071820081-009f0129c71c?q=80&w=1080"
+        prompt = "Scrivi un post corporate sui servizi di Marte Agency."
 
-    # Giorno 10: Film Distribution
     elif day_num == 10:
-        post_type = "Ricerca Film"
-        context_data = "Cerchiamo film indipendenti per distribuzione digital e home video."
-        prompt = "Scrivi un post rivolto a registi e produttori indipendenti. Marte Studios cerca nuove opere per la distribuzione. Focus su valorizzazione del talento."
+        post_type = "Call for Movies"
+        link_url = "https://martestudios.com"
+        scraped_data["text"] = "Call per registi indipendenti: Distribuzione digital e home video."
+        scraped_data["img_url"] = "https://images.unsplash.com/photo-1485846234645-a62644f84728?q=80&w=1080"
+        prompt = "Scrivi una call-to-action per registi. Cerchiamo opere da distribuire."
 
-    # Giorno 20: MSH Blog Promo
     elif day_num == 20:
         post_type = "Promo MSH Blog"
-        context_data = "Blog di Intelligence e News Geopolitiche."
-        prompt = "Scrivi un post che invita a leggere MSH (msh.martestudios.com). Focus: In un mondo caotico, l'informazione verificata è potere."
+        link_url = "https://msh.martestudios.com"
+        scraped_data["text"] = "MSH: Intelligence & Geopolitical News."
+        scraped_data["img_url"] = "https://images.unsplash.com/photo-1451187580459-43490279c0fa?q=80&w=1080"
+        prompt = "Invita a leggere MSH per analisi globali verificate."
 
-    # --- ESECUZIONE ---
+    # --- INVIO ---
     if post_type:
         print(f"Generazione post: {post_type}")
-        linkedin_copy = get_gemini_copy(prompt, context_data)
         
+        # Se non abbiamo trovato testo nel sito (errore scraping), usiamo un fallback
+        if len(scraped_data["text"]) < 20:
+            scraped_data["text"] = "Contenuto attualmente non disponibile. Invitare a visitare il sito."
+            
+        linkedin_copy = get_gemini_copy(prompt, scraped_data["text"], link_url)
+        image_bytes = download_image(scraped_data["img_url"])
+
         email_body = f"""
-        Ciao! Ecco la tua bozza per LinkedIn di oggi ({post_type}).
+        POST LINKEDIN ({post_type})
         
-        --------------------------------------------------
+        1. Scarica immagine allegata.
+        2. Copia testo.
+        3. Pubblica.
         
+        --- COPY ---
         {linkedin_copy}
-        
-        --------------------------------------------------
-        
-        [Immagine suggerita: Screenshot dal sito o foto attinente]
-        
-        Buon lavoro!
-        Marte Social Bot
+        --- FINE ---
         """
         
-        send_email(post_type, email_body)
+        send_email(post_type, email_body, image_bytes)
     else:
-        print("Oggi nessun post in calendario.")
+        print("Nessun post oggi.")
 
 if __name__ == "__main__":
     main()
